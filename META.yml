@@ -1,0 +1,16 @@
+# http://module-build.sourceforge.net/META-spec.html
+#XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
+name:         swatchdog
+version:      3.2.4
+version_from: swatchdog
+installdirs:  site
+requires:
+    Date::Calc:                    0
+    Date::Format:                  0
+    Date::Manip:                   0
+    File::Tail:                    0
+    Term::ANSIColor:               0
+    Time::HiRes:                   1.12
+
+distribution_type: module
+generated_by: ExtUtils::MakeMaker version 6.30

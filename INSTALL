@@ -1,0 +1,26 @@
+To install, simply issue the following commands:
+
+	perl Makefile.PL
+	make
+	make test
+	make install
+	make realclean
+
+Swatchdog installs just like a CPAN module. If you are not familiar with this 
+process then you may want to read about it by issuing the command:
+
+	man ExtUtils::MakeMaker
+
+Use the "perldoc" command if your "man" cannot find the document.
+
+If you see messages like these:
+
+    Warning: prerequisite Date::Calc 0 not found at (eval 1) line 219.
+    Warning: prerequisite Date::Parse 0 not found at (eval 1) line 219.
+    Warning: prerequisite File::Tail 0 not found at (eval 1) line 219.
+    Warning: prerequisite Time::HiRes 1.12 not found at (eval 1) line 219.
+
+Then you need to install the CPAN module(s) that it doesn't find before 
+you can use swatchdog. You can find these modules at search.cpan.org.
+However, many operating systems may already bundle them up in neat
+little packages, so you should check with them first.

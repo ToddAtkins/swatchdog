@@ -1,0 +1,17 @@
+MANIFEST
+README
+CHANGES
+COPYRIGHT
+COPYING
+INSTALL
+KNOWN_BUGS
+Makefile.PL
+examples/SendMail.pm
+tools/reswatchdog
+tools/swatchdog_oldrc2newrc
+swatchdog
+t/01cpan_modules.t
+lib/Swatchdog/Actions.pm
+lib/Swatchdog/Throttle.pm
+lib/Swatchdog/Threshold.pm
+META.yml                                 Module meta-data (added by MakeMaker)

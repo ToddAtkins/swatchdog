@@ -1,0 +1,300 @@
+20080825:
+
+  Stopped swatchdog from removing comments from perlcode in configuration file
+
+20080507:
+
+  Changed default tail command arguments
+
+  Fixed input-record-separator command line argument to allow for a null string
+
+  Corrected perlcode parsing and depth handling
+
+  Fixed how swatchdog kills off the tail command on exit
+
+  Fixed how the tail command is launched
+
+20060721:
+
+  Took out print statement in Threshold module that was only there for 
+  debugging purposes.
+
+20060720:
+
+  Trying submitted patch no. 1160401 so that tail will die when it is 
+  supposed to.
+
+  Swatchdog now dies when it cannot write its watcher script instead of 
+  chewing up the CPU doing nothing.
+
+20060713:
+
+  Updated documentation.
+
+20060622:
+
+  Eliminated the default configuration since it really did not do 
+  anything useful.
+
+20060601:
+
+  Set $0 in the swatchdog script to the original command line so that it 
+  can be distinguished from other swatchdog instances in the process table.
+
+20060502:
+
+  Added "include" configuration keyword for including other configuration
+  files into the main one.
+
+  Fixed handling of variable set by --dump-script command line argument.
+
+20060428:
+
+  Can now use \ as a line continuation indicator in config file.
+
+20060425:
+
+  Created Threshold module as an intended replacement for throttle
+
+20060309:
+
+  Changed setting of SIGCHLD from IGNORE to DEFAULT.
+
+  Added "normal" mode to echo action for backward compatability
+
+  Removed passing of unused REGEX option to throttle
+
+  Fixed setting of $RestartTime variable so that it will restart on the 1st day
+
+  Fixed parsing of "perlcode 0" caused by code block being incorrectly 
+  flagged as being open.
+
+20051201:
+
+  Fixed documentation errors described in [ swatchdog-Patches-938132 ]
+
+  Fixed dependency checking and documentation [ swatchdog-Patches-983344 ]
+
+  Added /usr/bin/write as default command to the "write" action. [ swatchdog-Patches-983347 ]
+
+  Fixed grammatical and typographical errors as well as an option quoting bug. [ swatchdog-Patches-986013 ]
+
+  Fixed MAILER assignment. [ swatchdog-Patches-1077713 ]
+
+20040719:
+
+  Released version 3.1.1
+
+20040701:
+
+  Fixed error in default TIME_REGEX option in throttle function.
+
+  Added proper signal handling to mail action so that it wont hang
+  on UNIX OSes like FreeBSD.
+
+20040408:
+
+  Released version 3.1
+
+20031118:
+
+  Fixed extra module "use" code
+
+20030313:
+
+  Changed tail arguments from "-1 -f" to "-n 0 -f"
+
+20030109:
+
+  Put action and throttle code into modules named Swatchdog::Actions and
+  Swatchdog::Throttle respectively.
+
+  Changed "-I" command option from being shorthand for 
+  "--input-record-separator" to being short for "--extra-include-dirs"
+
+  Added --extra-include-dirs (or -I) and --extra-modules (or -M) command
+  line options. 
+
+20020712:
+
+  Changed $PERL setting from 'perl' to $^X
+
+  Changed interval from 1.0 to 0.5 and added maxinterval setting to 
+  File::Tail->new options.
+
+  Removed commas from string of addresses passed to the mailer in mail action
+  code.
+
+20020429:
+
+  Fixed message option assignment within and outside of throttle blocks.
+
+20020419:
+
+  Fixed yet another throttle bug that was causing it to return blank messages.
+
+  Added depth setting to perlcode to allow perlcode to be placed in 
+  different levels of nested blocks.
+
+20020412:
+
+  Fixed typo in threshold code generation.
+
+20020405:
+
+  Added '-1' to default arguments for use with tail.
+
+20020403:
+
+  Added --tail-program-name and --tail-args command line options
+
+20020402:
+
+  Added "code" action so users can insert perl code in action area
+
+  Added possibility for user to overide "message" option to any action.
+
+  Added --awk-field-syntax and --noawk-field-syntax command line options
+
+20020329:
+
+  Moved write_pid code from the main script to the generated (watcher) script.
+
+  Added "perlcode" and "threshold"
+
+  Corrected various typos
+
+  Allowed watchfor, ignore, throttle, threshold, and perlcode keys in 
+  config file to be case insensitive.
+
+  fixed STDOUT autoflush setting.
+
+20020319:
+
+  Added option for user to use their own regular expression to extract a 
+  throttle key from a message using greedy pattern matching.
+
+20020307:
+
+  Went back to using the system's tail(1) command for tailing files.
+
+  Added --use-cpan-file-tail option to users to keep using the File::Tail
+  module for tailing files.
+
+  Added testing for validity of patterns.
+
+3.0.4:
+
+  Fixed major bug involving key value assignment in throttle.
+
+3.0.3:
+
+  Simplified Makefile.PL
+
+  Fixed action parsing problem where a space was being appended to the 
+  option name.
+
+  Fixed action parsing problem dealing with quotation marks.
+
+  Fixed documentation on the '--restart-time' command line option.
+
+3.0.2:
+
+  Changed the default input file to be /var/log/messages instead of
+  /var/log/syslog if it exists.
+
+  Fixed problem of swatchdog continuing to try to match a pattern
+  after the pattern was matched but was throttled. Credit goes
+  to Rob Davies for bringing this to my attention.
+
+  Changed building of throttled messages to replace characters that are cut
+  out with a '_'
+
+  Added date_loc, time_loc, and extra_cuts options to throttle.
+
+  Fixed numerous problems with throttling
+	
+  Changed "#!/bin/sh -" to "#!/usr/bin/perl" on first line of script.
+
+  Fixed "--daemon" mode so that it runs more reliably in the background
+  by:
+	
+  Cleaned up read_config routine. 
+
+  Fixed parsing problem involving the use of a single TAB as a separator. 
+
+  Added default code generation when faced with a config file that does not
+  contain anything useful.
+
+  Changed format of message displayed when throttling to include
+  the entire message.
+
+3.0.1:
+  Fixed code that searches for sendmail program.
+
+3.0:
+  Fixed write action.
+
+  Added code to search for sendmail and write programs.
+
+  Fixed documentation to say that "use=message" is the default for throttle.
+
+  Added --pid-file option.
+
+  Removed --pattern-separator and --action-separator options from 
+  documentation.
+
+  Changed record structure that holds configuration information so that
+  it can handle multiple actions of the same type within a single 
+  watchfor block.
+
+  Turned autoflush on inside of pipe action.
+
+3.0b5:
+  Implemented use of $n (field number variable) use in commands.
+
+  Added the "keep_open" option to the "pipe" action. The pipe is now closed
+  every time the action is used unless this option is used.
+
+  Added the "use" option to throtle. 
+
+3.0b4:
+  Removed "use strict;" from watcher script until I make the code a little
+  cleaner. It currently prevents the "--examine" switch from working.
+
+3.0b3:
+  Added "continue" and "quit" actions.
+
+  Changed keyword/value separation from '=' to whitespace, but
+  will still handle the '=' sign for backward compatability.
+  This was done in order to make the configuration file make more
+  sense.
+  
+  Reverted back to creating a script file, but instead of creating it in
+  /tmp, Swatchdog creates it in the user's home directory under the name
+  .swatchdog_script.<PID>
+
+  Fixed parsing of "throttle" setting.
+
+  Added "when" option to all actions to allow for time-of-day and day-of-week
+  specific actions.
+
+  Added "subject" option to "mail" action.
+
+3.0b2:
+
+  Added signal handling.
+
+  Updated POD to include the color options to the echo action.
+
+  Fixed sun terminal detection bug in ring_bell subroutine.
+
+  Fixed echo() subroutine to handle multiple modes.
+
+  Added some color definitions for use in echo() routine.
+
+  Corrected errors in example files.
+
+  Fixed package checking code in Makefile.PL and added some perl version
+  checking.
+

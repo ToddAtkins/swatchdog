@@ -1,0 +1,37 @@
+#!/usr/bin/perl
+
+=head1 NAME
+
+reswatchdog - Restart Swatchdog
+
+=head1 DESCRIPTION
+
+B<Reswatchdog> attempts to send a HUP signal to a swatchdog process. It finds the 
+process ID of B<swatchdog> by looking for a file named I<.swatchdog_script.>B<PID>
+in the home directory.
+
+=head1 SEE ALSO
+
+b<swatchdog(1)>
+
+=cut
+
+use DirHandle;
+
+my $script_prefix = '.swatchdog_script';
+my $homedir = $ENV{'HOME'};
+my $dh = new DirHandle $homedir;
+
+if (defined $dh) {
+  while (defined($_ = $dh->read)) {
+    if (/^${script_prefix}\.[0-9]*/) {
+      split(/\./, $_);;
+      print "Sending HUP signal to PID $_[$#_]\n";
+      kill('HUP', $_[$#_]);
+      undef $dh;
+      exit 0;
+    }
+  }
+}
+undef $dh;
+exit 1;

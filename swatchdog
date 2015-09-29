@@ -1,0 +1,1394 @@
+#!/usr/bin/perl
+
+eval 'exec /usr/local/bin/perl  -S $0 ${1+"$@"}'
+    if 0; # not running under some shell
+#
+#    swatchdog: The Simple WATCHdog
+#    Copyright (C) 1993-2008 E. Todd Atkins
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+ 
+use strict;
+use English;
+use FileHandle;
+use Getopt::Long;
+use IO::Handle;
+use POSIX ":sys_wait_h";
+use Date::Parse;
+use Date::Format;
+use Pod::Usage;
+
+use vars qw/
+  $commandLineString
+  $awk_field_syntax
+  $opt_config_file
+  $opt_daemon
+  $opt_debug_level
+  $opt_dump_script
+  $opt_examine
+  @extra_modules
+  @extra_include_dirs
+  $opt_help
+  $opt_input_record_separator
+  $opt_old_style_config
+  $opt_pid_file
+  $opt_style_config
+  $opt_read_pipe
+  $opt_restart_time
+  $opt_tail_file
+  $opt_script_dir
+  $opt_version
+  @Config
+  $Done
+  $Restart
+  $VERSION
+  $Now
+  $pid
+  $thCounter
+  $tail_cmd_args
+  $tail_cmd_name
+  $use_cpan_file_tail
+/;
+
+my @Swatchdog_ARGV = join(' ', $0, @ARGV); # Save just in case we need to restart 
+(my $Me = $0) =~ s%.*/%%;	      # Strip the path off of the program name
+
+$SIG{'CHLD'} = 'DEFAULT';
+
+my $DEF_CONFIG_FILE = "$ENV{'HOME'}/.swatchdogrc";
+my $DEF_INPUT;
+if ( -f '/var/log/messages' ) {
+  $DEF_INPUT = '/var/log/messages';
+} elsif ( -f '/var/log/syslog' ) {
+  $DEF_INPUT = '/var/log/syslog';
+}
+
+my $Config_File     = '';
+my $Now = 0;  # The current time in Unix seconds. Gets set when set_restart_time is called
+my $thCounter = 0;
+my $tail_cmd_name = ''; # We'll try to find it in the PATH later
+my $tail_cmd_args = '-n 0 -F'; 
+$awk_field_syntax = 0;
+
+my $AUTHOR = "E. Todd Atkins <Todd.Atkins\@StanfordAlumni.ORG>";
+$VERSION = "3.2.4";
+my $BUILD_DATE = "Aug 25, 2008";
+
+my $swID = 0; 		# Main ID used for threshold functionality within 
+			# watchfor blocks
+my $swIDSub = 0;	# Secondary ID used for threshold functionality 
+			# within individule actions (not implemented yet)
+
+my $commandLineString = $0 . ' ' . join(' ', @ARGV);
+ 
+sub print_version {
+  print "This is $Me version $VERSION\n";
+  print "Built on $BUILD_DATE\n";
+  print "Built by $AUTHOR\n";
+  exit 0;
+}
+
+ 
+sub parse_command_line {
+
+  use Getopt::Long;
+  Getopt::Long::config('bundling');
+  pod2usage if not GetOptions(
+				 "awk-field-syntax!" => \$awk_field_syntax,
+				 "config-file|c=s" => \$opt_config_file,
+				 "daemon" => \$opt_daemon,
+				 "debug:i" => \$opt_debug_level,
+				 "extra-module|M=s@" => \@extra_modules,
+				 "extra-include-dir|I=s@" => \@extra_include_dirs,
+				 "help|h" => \$opt_help,
+                                 "input-record-separator:s" => \$opt_input_record_separator,
+				 "old-style-config|O" => \$opt_old_style_config,
+				 "pid-file=s" => \$opt_pid_file,
+				 "restart-time|r=s" => \$opt_restart_time,
+				 "tail-args=s" => \$tail_cmd_args,
+				 "tail-program-name=s" => \$tail_cmd_name,
+				 "tail-file|t=s" => \$opt_tail_file,
+				 "read-pipe|p=s" => \$opt_read_pipe,
+				 "examine|f=s" => \$opt_examine,
+				 "script-dir=s" => \$opt_script_dir,
+				 "use-cpan-file-tail" => \$use_cpan_file_tail,
+				 "version|V" => \$opt_version,
+				 "dump-script:s" => \$opt_dump_script,
+				);
+
+  pod2usage if $opt_help;
+
+  if ($opt_version) {
+    print_version;
+    exit(0);
+  }
+  
+  $opt_input_record_separator = (defined $opt_input_record_separator) ? $opt_input_record_separator : $/;
+
+  # This is slightly bogus -- we call the set_restart_time function now
+  # because if the args aren't properly formatted,  we want to die before the fork
+  set_restart_time($opt_restart_time) if defined $opt_restart_time; 
+}
+
+ 
+###
+### Routines to help with debugging
+###
+
+sub dprint {
+    my $msg_lev = shift;
+    my $msg = shift;
+    print STDERR "DEBUG($msg_lev): $msg\n" if ($msg_lev & $opt_debug_level);
+}
+
+ 
+#
+# make_debug_code() - creates the debug code for the watcher script
+#
+sub make_debug_code {
+    my $code = '';
+
+    $code = sprintf("my \$Debug_Mode = %d;\n", defined $opt_debug_level ? $opt_debug_level : 0);
+    $code .= q|
+
+sub dprint {
+    my $msg_lev = shift;
+    my $msg = shift;
+    print STDERR "DEBUG($msg_lev): $msg\n" if ($msg_lev & $Debug_Mode);
+}
+
+|;
+    return $code;
+}
+
+ 
+#
+# checks validity of a regular expression. returns 1 if valid.
+#
+sub is_valid_pattern {
+  my $pat = shift;
+  return eval { "" =~ /$pat/; 1 } || 0;
+}
+
+ 
+#
+# Build a configuration record structure
+# 
+{
+  my @records;
+sub read_config {
+  my $filename = shift;
+  my $rec = ();
+  my $i = -1;
+  my $keyword;
+  my $pattern;
+  my $option;
+  my $value;
+  my $fh;
+
+  if ( not -r $filename ) {
+    die "$Me: cannot find $filename. Please create it or specify an alternate configuration file. Exiting.\n";
+  }
+
+  $fh = new FileHandle "$filename", "r";
+  if (not defined $fh) {
+    warn "$Me: cannot open $filename: $!\n";
+    exit 1;
+  }
+
+  while (<$fh>) {
+    my($key, $val);
+    chomp;
+    s/^\s+//; ## strip off leading blank space
+    s/\s+$//; ## strip off trailing blank space
+
+    ### Skip comments and blank lines ###
+    next if (/^\#/ or /^$/);
+
+    ### combine lines that end with \ + <cr> ###
+    while (/\\$/) {
+      my $line;
+      s/\\$//;
+      if (defined($line = <$fh>)
+	  and not $line =~ /^\#/ and not $line =~ /^$/) {
+        chomp($line);
+        s/^\s+//; ## strip off leading blank space
+	s/\s+$//; ## strip off trailing blank space
+        $_ .= $line;
+      }
+    }
+
+    if (/\s*=\s*/) {
+      $key = (split(/\s*[= ]\s*/))[0];
+      ($val = substr($_, length($key))) =~ s/^\s*=\s*//;
+    } else {
+      $key = (split())[0];
+      ($val = substr($_, length($key))) =~ s/^\s*//;
+    }
+
+    s/\#.*$// if ($key ne 'perlcode'); ## strip trailing comments
+
+    if ($key =~ /include/i) {
+      @records = read_config($val);
+    } elsif ($key =~ /^(watchfor|waitfor|ignore)$/i) {
+      $i++;
+      if (defined $rec->{pattern}) {
+	push @records, $rec;
+	$rec = ();
+      }
+
+      if (not is_valid_pattern($val)) {
+	die "$Me: error in pattern \"$val\" on line $. of $filename\n";
+      }
+
+      $rec->{keyword} = lc($key);
+      if (length($val)) {
+	$rec->{pattern} = $val;
+      }
+    } elsif ($key =~ /perlcode/i) {
+      my $depth = 1;
+      if ($val =~ /(\d+)\s+(.*)$/) { # put perlcode at a given depth
+	$depth = $1;
+	$val = $2;
+      }
+      if ($depth < 2) {
+	$i++;
+	if (defined $rec->{pattern}) {
+	  push @records, $rec;
+	  $rec = ();
+	}
+	$rec->{keyword} = lc($key);
+        $rec->{depth} = $depth;
+	$rec->{value} = $val if (length($val));
+        push @records, $rec;
+	$rec = ();
+      } else { # depth is 2
+	push(@{$rec->{actions}}, { action => lc($key),
+				   depth => $depth,
+				   value => $val });
+      }
+    } elsif ($i < 0) {
+      warn "$Me: error in $filename at line ${.}: invalid keyword. Skipping.\n";
+    } elsif ($key =~ /^(throttle|threshold)$/i) {
+      $rec->{lc($key)}{value} = $val;
+    } else {
+      push(@{$rec->{actions}}, { action => $key, value => $val });
+    }
+  }
+  undef $fh;
+  if (defined $rec->{pattern}) {
+    push @records, $rec;
+    $rec = ();
+  }
+
+  ## Sanity Check: If the config file did not contain anything useful then exit 
+  if ($#records < 0) {
+    die "$Me: There were no useful entries in the configuration file. Exiting.\n";
+  } else {
+    return(@records);
+  }
+}
+}
+
+ 
+sub read_old_config {
+  my $filename = shift;
+  my $fh = new FileHandle $filename, "r";
+  my @records = ();
+
+  if (not defined $fh) {
+    die "$Me: cannot read $filename: $!\n";
+  }
+
+  while (<$fh>) {
+    my $rec = ();
+    chomp;
+    @_ = split(/\t+/);
+
+    if (/^\s*$/ or /^\s*\#/) {
+      next;
+    } elsif (/ignore/) {
+      $rec->{keyword} = 'ignore';
+      $rec->{pattern} = $_[0];
+    } else {
+      $rec->{keyword} = 'watchfor';
+      $rec->{pattern} = $_[0];
+      if (defined $_[2] and $_[2] =~ /^[0-9]/) {
+	$rec->{'throttle'}->{value} = $_[2];
+      }
+      foreach my $action (split(/,/, $_[1])) {
+	my ($key,$val) = split(/\s*=\s*/, $action);
+	push(@{$rec->{actions}}, { action => $key, value => $val });
+      }
+    }
+    push(@records, $rec);
+  }
+  return (@records);
+}
+
+ 
+#
+# make_start_code -- return the start of our swatchdog generated perl script
+#
+# usage: $script .= make_start_code;
+#
+sub make_start_code {
+  my $code = '';
+  my $mail_cmd = '';
+  my $extra_includes = '';
+  my $extra_modules = '';
+
+  if ($#extra_modules != -1) {
+    foreach my $m (@extra_modules) {
+      $extra_modules .= "use $m;\n";
+    }
+  }
+
+  if ($#extra_include_dirs != -1) {
+    $extra_includes = join(' ', @extra_include_dirs);
+  }
+
+  $code  = qq[
+#
+#    swatchdog: The Simple WATCHdog
+#    Copyright (C) 1993-2006 E. Todd Atkins
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+
+use strict;
+use FileHandle;
+use POSIX ":sys_wait_h";
+
+## User supplied modules and their locations
+use lib qw($extra_includes);
+$extra_modules
+
+use Swatchdog::Actions;
+use Swatchdog::Throttle;
+use Swatchdog::Threshold;
+
+use vars qw/
+  %Msg_Rec
+  \$Fh
+/;
+
+\$SIG{'TERM'} = \$SIG{'HUP'} = 'goodbye';
+\$SIG{'CHLD'} = 'DEFAULT';
+
+## Constants
+(my \$Me = \$0) =~ s%.*/%%;
+my \$BELL   = "\007";
+\$/ = "$opt_input_record_separator";
+my \$swatchdog_flush_interval = 300;
+my \$swatchdog_last_flush = time;
+my \$tail_pid = -1;
+
+use IO::Handle;
+STDOUT->autoflush(1);
+
+sub goodbye {
+  \$| = 0;
+  if( \$tail_pid != -1 ) {
+    kill('TERM', \$tail_pid);
+  }
+];
+
+  if ($opt_read_pipe) {
+    $code .= "  close(SW_PIPE);\n";
+  } elsif ($opt_examine) {
+    $code .= "  \$Fh->close;\n";
+  }
+
+  $code .= q|
+  &Swatchdog::Actions::close_pipe_if_open();
+
+  exit(0);
+}
+
+#
+# write_pid_file(file_name) - writes a one line file that contains
+# the current process id.
+#
+sub write_pid_file {
+  my $name = shift;
+  my $fh = new FileHandle "$name", "w";
+ 
+  if (defined($fh)) {
+    print $fh "$$\n";
+    $fh->close;
+  } else {
+    warn "$Me: cannot write pid file named $name: $!\n";
+  }
+}
+  |;
+
+  if ($opt_daemon) {
+    $code .= qq[
+my \$pid = fork;
+exit if \$pid;
+die "Couldn't fork: \$!" unless defined(\$pid);
+# dissociate from the controlling terminal
+POSIX::setsid() or die "Can't start new session: \$!"; 
+# set our named to 'swatchdog' so that rc scripts can 
+# figure out who we are.
+\$0="$commandLineString";
+	       ];
+  } else {
+    $code .= qq[print \"\\n*** ${Me} version ${VERSION} (pid:$$) started at \" . `/bin/date` . \"\\n\";];
+  }
+  
+  $code .= qq[write_pid_file("$opt_pid_file"); \n] if (defined $opt_pid_file);
+
+  return $code;
+}
+
+ 
+sub make_start_loop {
+  my $filename = $DEF_INPUT;
+  my $code = '';
+
+  if (defined $opt_examine) {
+    $filename = $opt_examine;
+    $code = qq[
+use FileHandle;
+my \$Filename = '$filename';
+\$Fh = new FileHandle \"\$Filename\", 'r';
+if (not defined \$Fh) {
+    die "$0: cannot read input \\"\$Filename\\": \$!\\n";
+}
+
+LOOP: while (<\$Fh>) {
+];
+
+  } elsif (defined $opt_read_pipe) {
+    $filename = $opt_read_pipe;
+    $code = qq[
+use FileHandle;
+my \$Filename = '$filename';
+
+if (not open(SW_PIPE, \"$filename|\")) {
+    die "$0: cannot read from pipe to program \\"\$Filename\\": \$!\\n";
+}
+
+LOOP: while (<SW_PIPE>) {
+];
+
+  } else {
+    $filename = $opt_tail_file if (defined $opt_tail_file);
+    if ($use_cpan_file_tail) {
+      $code = qq[
+use File::Tail;
+my \$Filename = '$filename';
+my \$File = File::Tail->new(name=>\$Filename, tail=>1, maxinterval=>0.5, interval=>0.5);
+if (not defined \$File) {
+    die "$0: cannot read input \\"\$Filename\\": \$!\\n";
+}
+
+LOOP: while (defined(\$_=\$File->read)) {
+];
+    } else {
+      if ($tail_cmd_name eq '') {
+	foreach my $path (split(/:/,$ENV{'PATH'})) {
+	  if (-x "${path}/tail") {
+	    $tail_cmd_name = "$path/tail";
+	    last;
+	  }
+	}
+	die "$Me: cannot find \"tail\" program in PATH\n" if $tail_cmd_name eq '';
+      }
+       $code = qq/
+my \$filename = '$filename';
+\$tail_pid = open(TAIL, \"$tail_cmd_name $tail_cmd_args \$filename|\");
+if (not \$tail_pid) {
+    die "$0: cannot read run \\"$tail_cmd_name $tail_cmd_args \$filename\\": \$!\\n";
+}
+
+LOOP: while (<TAIL>) {
+/;
+    }
+  }
+
+  $code .= q!
+    chomp;
+    my $S_ = $_;
+    @_ = split;
+    
+    ### quote all special shell chars ###
+    $S_ =~ s/([;&\(\)\|\^><\$`'\\\\])/\\\\$1/g;
+    my @S_ = split(/\s+/, $S_);
+
+!;
+}
+
+ 
+sub make_end_code {
+    my $code;
+    $code = q[
+}
+## TODO: Add close !!!
+];
+    return $code;
+} 
+
+sub action_def_to_subroutine_call {
+  my $key = shift;  # converts to subroutine name
+  my $optstr = shift; # comma separated option string
+  my $pattern = shift;
+  my $message = shift;
+
+  my $actinfo = { # action subroutine info
+                 "continue" => { 'sub_name' => "continue" },
+		 "bell" => { 'sub_name' => "&Swatchdog::Actions::ring_bell", 'def_arg' => 'RINGS' },
+		 "echo" => { 'sub_name' => "&Swatchdog::Actions::echo", 'def_arg' => 'MODES' },
+		 "exec" => { 'sub_name' => "&Swatchdog::Actions::exec_command", 'def_arg' => 'COMMAND' },
+		 "pipe" => { 'sub_name' => "&Swatchdog::Actions::send_message_to_pipe", 'def_arg' => 'COMMAND' },
+		 "mail" => { 'sub_name' => "&Swatchdog::Actions::send_email", 'def_arg' => 'ADDRESSES' },
+		 "quit" => { 'sub_name' => "exit" },
+		 "throttle" => { 'sub_name' => '&Swatchdog::Throttle::throttle', 'def_arg' => 'MIN_DELTA' },
+		 "write" => { 'sub_name' => "&Swatchdog::Actions::write_message", 'def_arg' => 'USERS' },
+		};
+
+  my %options;
+  my $have_opts = 0;
+
+  foreach my $v (split(/,/, $optstr)) {
+    if ($v =~ /(\w+)\s*=\s*"?(\S+[^"]*)/) {
+      $options{uc $1} = $2;
+    } else {
+      my $opt = $v;
+      $opt =~ s/@/\\@/g;
+      $opt =~ s/^\s+//o;
+      $opt =~ s/^\s+$//o;
+      $opt = $1 if ($opt =~ /^['"]\s*(.*)\s*['"]$/o);
+      $opt =~ s/"/\\"/go;
+
+      if ($actinfo->{$key}{'def_arg'} eq 'MODES') { 
+        ## Modes are processed as an array ##
+	push(@{$options{$actinfo->{$key}{'def_arg'}}}, $opt);
+      } else {
+	$options{$actinfo->{$key}{'def_arg'}} = $opt;
+      }
+    }
+  }
+
+  if ($key =~ /(exec|pipe)/) {
+    $options{'COMMAND'} = convert_command('S_', $options{'COMMAND'});
+  }
+
+  $options{'MESSAGE'} = $message unless exists $options{'MESSAGE'};
+
+  my $opts = '';
+  if (scalar %options) {
+    if ($key eq 'threshold') {
+      $opts = "\'SWID\' => \'$swID\', ";
+    }
+    foreach my $k (keys %options) {
+      if ($k eq 'MODES') {
+	$opts .= "\'$k\' => [ ";
+	foreach my $v (@{$options{$k}}) {
+	  $opts .= "\"$v\",";
+	}
+	$opts .= " ], ";
+      } elsif ($k eq 'MIN_DELTA') {
+        ## convert to new throttle variable name ##
+        $opts .= "\'HOLD_DHMS\' => [ ";
+        my @dhms = split(/:/,$options{$k});
+        for (my $i = $#dhms ; $i < 3 ; $i++) {
+          unshift(@dhms, 0);
+        }
+        foreach my $v (@dhms) {
+	  $opts .= "\"$v\",";
+	}
+	$opts .= " ], ";
+      } else {
+	$opts .= "\'$k\' => \"$options{$k}\", "; # if (defined $options{$k});
+      }
+
+      if ($k eq 'THRESHOLD') {
+	$opts .= "\'SWID\' => \'$swID:$swIDSub\', ";
+      }
+    }
+  }
+
+  my $sub_name = (exists $actinfo->{$key}{'sub_name'}) 
+  ? $actinfo->{$key}{'sub_name'} : $key;
+
+  return "$sub_name($opts)";
+}
+ 
+#
+# convert_command -- convert wildcards for fields in command from
+#       awk type to perl type.  Also, single quote wildcards
+#       for better security.
+
+# usage: &convert_command($Command);
+
+sub convert_command {
+  my $varname = shift;
+  my $command = shift;
+  my @new_cmd = ();
+
+  $command =~ s/\$[0*]/\$$varname/g if $awk_field_syntax;
+
+  foreach my $i (split(/\s+/, $command)) {
+    if ($awk_field_syntax and $i =~ /\$([0-9]+)/) {
+      my $n = substr($i, 1);
+      $n--;
+      push(@new_cmd, "\$$varname\[$n\]");
+    } else {
+      push(@new_cmd, $i);
+    }
+  }
+
+  return join(' ', @new_cmd);
+}
+
+ 
+sub make_ignore_block {
+  my $ref = shift;
+  dprint(4, "ignoring $ref->{pattern}");
+  return "\tnext;\n";
+}
+
+ 
+sub make_watchfor_block {
+  my $pattern = shift;
+  my $ref = shift;
+  my $code = "";
+  my $do_quit = 0;
+  my $do_continue = 0;
+  my $message = '$_';
+
+  $swID++; 	# increment internal identifier
+  $swIDSub = 0; # reset internal sub identifier
+
+  foreach my $a_ref (@{$ref->{actions}}) {
+    if ($a_ref->{action} eq 'perlcode' and $a_ref->{depth} == 2) {
+      $code .= "\t$a_ref->{value}\n";
+    }
+  }
+
+  # Encapsulate the whole thing (even throttle) in a threshold block.  The
+  # indenting in the generated code is "wrong", but there is no easy way to
+  # fix it.
+  if (exists $ref->{"threshold"}) {
+    $code .= "     if (";
+    $code .=  action_def_to_subroutine_call('threshold', $ref->{'threshold'}{value}, $pattern, $message);
+    $code .=  ") {\n";
+  }
+
+  if (exists $ref->{"throttle"}) {
+    $code .= "      if ((my \$rtn = ";
+    $code .=  action_def_to_subroutine_call('throttle', $ref->{'throttle'}{value}, $pattern, $message);
+    $code .= ") ne '') {\n";
+    $message = '$rtn';
+  }
+  dprint(4,"watching $ref->{pattern}");
+
+  foreach my $a_ref (@{$ref->{actions}}) {
+    $swIDSub++; # increment internal sub identifier
+
+    my $act = $a_ref->{action};
+    if ($act eq 'perlcode' and $a_ref->{depth} == 3) {
+      $code .= "\t$a_ref->{value}\n";
+    } elsif ($act eq 'continue') {
+      $do_continue = 1;
+    } elsif ($act eq 'quit') {
+      $do_quit = 1
+    } elsif ($act ne 'perlcode') {
+      $code .= "\t";
+      $code .= action_def_to_subroutine_call($act, $a_ref->{value}, undef, $message);
+      $code .= ";\n";
+    }
+  }
+
+  if (exists $ref->{"throttle"}) {
+    $code .= "      }\n";
+  }
+  
+  if (exists $ref->{"threshold"}) {
+    $code .= "     }\n";
+  }
+  
+  if ($do_quit) {
+    $code .= "      exit;\n";
+  } elsif (not $do_continue) {
+    $code .= "      next;\n";
+  }
+  
+  return $code;
+}
+
+ 
+#
+# make_script() - The workhorse for creating the script that will do the
+# message processing.
+#
+# returns a string which contains the full script.
+#
+sub make_script {
+  my $key;
+  my $block_open = 0;
+  my $script = make_start_code();
+
+  for my $rec (@Config) {
+    if ($rec->{keyword} eq 'perlcode' and $rec->{depth} == 0) {
+      $script .= "$rec->{value}\n";
+    }
+  }
+
+  $script .= make_start_loop();
+
+  for my $rec (0..$#Config) {
+    my $pattern = $Config[$rec]->{pattern};
+    my $config = $Config[$rec];
+    if ($block_open) {
+      $script .= "    }\n\n";
+      $block_open = 0;
+    }
+
+    $key = $config->{keyword};
+
+    if ($key =~ /^perlcode$/ and $config->{depth} == 1) {
+      $script .= "    $config->{value}\n";
+      $block_open = 0;
+    } elsif ($key !~ /^perlcode$/) {
+      $script .= "    if ($pattern) {\n";
+      $block_open = 1;
+    }
+
+    if ($key =~ /^ignore$/) { 
+      $script .= make_ignore_block($config);
+    } elsif ($key =~ /^watchfor$/) {
+      $script .= make_watchfor_block($pattern, $config);
+    }
+  }
+  $script .= "    }\n";
+
+  $script .= make_end_code;
+
+  return $script;
+}
+ 
+#
+# terminate
+#
+# usage: terminate($SIGNAL);
+#
+sub terminate {
+    my($Sig) = shift;
+    dprint(16, "terminate($Sig)");
+    return if $pid == 0;
+
+    if ($Sig) { 
+      print STDERR "Caught a SIG$Sig -- sending a TERM signal to $pid\n" 
+    }
+    kill('TERM', $pid) unless $opt_dump_script;
+    $Restart = 0;
+}
+
+ 
+#
+# restart -- kill the child, delete the script, and start over.
+#
+# usage: &restart($Sig);
+#
+sub restart {
+    my($Sig) = shift;
+    dprint(16, "restart($Sig)");
+    print STDERR "Caught a SIG$Sig -- sending a TERM signal to $pid\n";
+    kill('TERM', $pid);
+    $Restart = 1;
+}
+
+ 
+## Courtesy of "Shoshana Abrass" <shoshana@anim.dreamworks.com> ...
+##
+## USAGE: set_restart_time(timestring)
+## WHICH: converts the user-given timestring into the time (in unix 
+##        seconds) when the program should next restart
+## WHERE: "timestring" is one of the supported command-line arguments, 
+##        for example:
+##
+##       00:01       restart every day at 12:01 AM
+##      +24:00       restart every 24 hours
+##       +1:00       restart every hour
+##
+##   There is currently no way to say "restart at the next HH:00 and every
+##   hour after that", but it might be a nice feature.
+##
+## RETURNS: seconds since Jan 1 1970  of the next restart time.
+##
+sub set_restart_time{
+  my ($timestring)=(@_);
+  my ($DeltaHrs, $DeltaMins, $RestartTime);
+  
+  my ($OneMinute, $OneHour, $OneDay) = (60, 3600, 86400); # In seconds
+  my ($EndOfTime) = (2147483647);                         # Mon Jan 18 19:14:07 2038
+
+  $Now = time();
+
+  if ( $timestring =~ m/^\+/ ) {
+    if ( $timestring =~ m/^\+(\d+):(\d+)$/  ) {
+      #
+      #
+      $DeltaHrs = $1 * $OneHour;
+      $DeltaMins = $2 * $OneMinute;
+
+      $RestartTime = $Now + $DeltaHrs + $DeltaMins;
+      if ( $RestartTime >= $EndOfTime ) {
+	print "ERROR: Restart time delta would put us past the end of\n";
+	print "       unix time, ", ctime ($EndOfTime);
+	die "       Unacceptable time delta\n";
+      }
+    }
+    else {
+      die "Unrecognized delta time format \"$timestring\"\n";
+    }
+  }
+  else {
+    if ( ! ($RestartTime = str2time("$timestring")) ) {
+      die "Unrecognized time format \"$timestring\"\n";
+    }
+    while ( $RestartTime <= $Now  ) {
+      # if the time of day has already passed, then   
+      # the user must mean that time tomorrow
+      dprint(32, "set_restart_time(): adding a day to RestartTime $RestartTime (unix seconds)");
+      $RestartTime += $OneDay;
+    }
+  }
+  
+  return ($RestartTime);
+}
+
+ 
+## Courtesy of "Shoshana Abrass" <shoshana@anim.dreamworks.com> ...
+##
+## USAGE: set_alarm (seconds)
+##
+## WHICH: Takes an absolute time value in unix seconds, and sets the alarm 
+##        to go off at that time by subtracting $Now seconds.  We want to use 
+##        the same value of $Now that was used above in set_restart_time, 
+##        because
+##            (1) we presume these functions are being called sequentially;
+##            (2) to calculate against one $Now and set against another 
+##                doesn't make sense.
+##
+sub set_alarm{
+  my ($RestartTime) = @_;
+
+  # carp "Called set_alarm";
+
+  if ( $Now == 0 ) { $Now = time();}  # This should never happen
+
+  if ( $RestartTime <= $Now ) {
+
+    # This should never happen, because the intention is that
+    # set_restart_time should be called before set_alarm. 
+    # But just in case....
+    print "WARNING: setting restart alarm to zero\n";
+    alarm(0);
+  }
+  else {
+    alarm ($RestartTime - $Now);
+  }
+
+}
+
+ 
+##
+## doit()
+##
+sub doit {
+  $SIG{'INT'} = $SIG{'QUIT'} = $SIG{'TERM'} = $SIG{'ALRM'} = $SIG{'HUP'} = 'default';
+
+  $Config_File = (defined $opt_config_file) ? $opt_config_file : $DEF_CONFIG_FILE;
+  
+  ## Read in the configuration file ##
+  if ($opt_old_style_config) {
+    @Config = read_old_config($Config_File);
+  } else {
+    @Config = read_config($Config_File);
+  }
+
+  ## Create a script based on the configuration file and command line options
+  my $Watcher_Script = make_script;
+  
+
+  if (defined $opt_dump_script) {
+    ## Just write the script to STDOUT or the value of $opt_dump_script and exit
+    if ($opt_dump_script ne '') {
+      open(DS,">$opt_dump_script") or die "$0: cannot write to $opt_dump_script: $!\n";
+    } else {
+      open(DS,">-") or die "$0: cannot wrote to STDOUT: $!\n";
+    }
+    print DS "### Watcher Script BEGIN ###\n";
+    print DS $Watcher_Script;
+    print DS "### Watcher Script END ###\n";
+    close(DS);
+    $Done = 1;
+  } else { ## Write the script to a file and run it ##
+
+    ## Write the script file ##
+    my $script_file = defined($opt_script_dir) ? $opt_script_dir : $ENV{'HOME'};
+    $script_file .= "/.swatchdog_script.$$";
+    my $swatchdog_fh = new FileHandle $script_file, "w";
+    if (defined $swatchdog_fh) {
+      $swatchdog_fh->print($Watcher_Script);
+      $swatchdog_fh->close;
+
+    ## Now fork and start monitoring ##
+    FORK: {
+	if ($pid = fork) {
+	  dprint(8, "doit(): pid = $pid");
+	  foreach my $k (sort keys %SIG) {
+	    dprint(8, "doit(): a: $k => $SIG{$k}") if defined $SIG{$k};
+	  }
+	  $SIG{'INT'} = $SIG{'QUIT'} = $SIG{'TERM'} = 'terminate';
+	  $SIG{'ALRM'} = $SIG{'HUP'} = 'restart';
+	  foreach my $k (sort keys %SIG) {
+	    dprint(8, "doit(): b: $k => $SIG{$k}") if defined $SIG{$k};
+	  }
+	  if ( defined $opt_restart_time ) {
+	    my $RestartTime = set_restart_time($opt_restart_time);
+	    print "Will restart at ", ctime($RestartTime);
+	    set_alarm ($RestartTime);
+	  }
+	  waitpid($pid, 0);
+	  alarm(0);
+	  if (defined $opt_daemon) {
+	    exit(0);
+	  }
+	} elsif (defined $pid) {
+	  exec("$EXECUTABLE_NAME $script_file");
+	} elsif ($! =~ /No more processes/) {
+	  # EAGAIN, supposedly recoverable fork error
+	  sleep 5;
+	  redo FORK;
+	} else {
+	  die "$Me: Can't fork: $!\n";
+	}
+      }
+      $Done = 1 if (not $Restart); # Restart set to 1 by restart() #
+      unlink($script_file);
+    }
+  }
+}
+
+###
+### MAIN
+###
+
+$Done = 0;
+$Restart = 0;
+
+while (!$Done) {
+  parse_command_line;
+  main::doit();
+}
+
+###
+### End of main block
+###
+ 
+=head1  NAME
+
+swatchdog - simple watcher
+
+=head1  SYNOPSIS
+
+B<swatchdog> 
+[ B<--awk-field-syntax> ]
+[ B<--config-file|-c> I<file> ] 
+[ B<--daemon> ] 
+[ B<--extra-include-dir|-I> I<path> ]
+[ B<--extra-module|-M> I<module_name> ]
+[ B<--help|-h> ]
+[ B<--input-record-separator> I<regex> ] 
+[ B<--old-style-config|-O> ]
+[ B<--pid-file> I<file> ]
+[ B<--restart-time|-r> I<time> ] 
+[ B<--script-dir> I<path> ]
+[ B<--tail-args> I<arguments_for_tail_program> ]
+[ B<--tail-program-name> I<filename> ]
+[ B<--version|-V> ]
+[ B<--use-cpan-file-tail> ]
+[ [ B<--examine|-f> I<file_to_examine> ] 
+| [ B<--read-pipe|-p> I<program_to_pipe_from> ] 
+| [ B<--tail-file|-t> I<file_to_tail> ] ]
+[ B<--debug> [ I<level> ] ] 
+[ B<--dump-script> I<filename> ]
+
+=head1  DESCRIPTION
+
+B<Swatchdog> is designed to monitor system activity.
+In order for B<Swatchdog> to be useful, it requires a configuration file
+which contains I<pattern(s)> to look for and I<action(s)>
+to perform when each pattern is found.
+
+=head1 COMMAND LINE OPTIONS
+
+=over 4
+
+=item B<--awk-field-syntax>
+
+Use this option only if you want to overide regular expression backreferencing
+in favor of B<awk(1)> style field referencing. Included for backward 
+compatability.
+
+=item B<--config-file|-c> I<filename>
+
+Tells B<swatchdog> where to find its configuration file. The default
+is I<${HOME}/.swatchdogrc>.
+
+=item B<--daemon>
+
+This tells B<swatchdog> to run in the background and disassociate itself from 
+any terminal.
+
+=item B<--extra-include-dir|-I> I<path>
+
+This tells B<swatchdog> where to look for custom I<action> modules.
+
+=item B<--extra-module|-M> I<module_name>
+
+This tells B<swatchdog> what custom I<action> modules to load in.
+
+=item B<--help|-h>
+
+Prints usage information and exits.
+
+=item B<--input-record-separator>=I<regular_expression>
+
+Tells B<swatchdog> to use I<regular_expression> to delineate
+the boundary of each input record. The default is a carriage return. 
+
+=item B<--old-style-config|-O>
+
+This tells B<swatchdog> that your configuration file is written using the
+syntax that was abandoned back in the 1990's.
+
+=item B<--pid-file> I<file>
+
+Writes the process ID to I<file>. Useful when running in daemon mode.
+
+=item B<--restart-time>=I<[+]hh:mm[am|pm]> or B<-r> I<[+]hh:mm[am|pm]>
+
+Restart at the specified time where I<hh> is hours and I<mm> is minutes. 
+If the am/pm indicator is omitted, then a 24-hour clock is assumed. 
+If the time is preceded by the "+" character, then the restart time 
+will be set to the current time plus the specified time and the am/pm
+indicator will be ignored.
+
+=item B<--script-dir>=I</path/to/directory>
+
+This switch causes the temporary watcher script to be written to a file
+in the specified directory rather than the user's home directory. It is
+highly advised that you do B<NOT> use directories that are writable by others
+such as /tmp.
+
+=item B<--tail-args> I<arguments_for_tail_program>
+
+Pass specific options to the B<tail(1)> program.
+
+=item B<--tail-program-name> I<filename>
+
+Runs an alternate B<tail(1)> like program instead of the system default.
+
+=item B<--version> or B<-V>
+
+Prints version information and exits.
+
+=item B<--use-cpan-file-tail>
+
+Use CPAN's File::Tail module to read the log file instead of the tail(1) 
+command.
+
+=back
+
+You may specify only one of the following options:
+
+=over 4
+
+=item B<--tail-file>=I<filename> or B<-t> I<filename>
+
+Examine lines of text as they are added to filename. 
+
+=item B<--read-pipe>=I<command> or B<-p> I<command>
+
+Examine input piped in from the I<command>. 
+
+=item B<--examine>=I<filename> or B<-f> I<filename>
+
+Use I<filename> as the file to examine. 
+B<Swatchdog> will do a single pass through the named file. 
+
+=back
+
+The following options are purely for debugging purposes, but are
+documented here for completeness:
+
+=over 4
+
+=item B<--debug>[=I<level>]
+
+Spew out various levels of debugging for swatchdog developers.
+
+=item B<--dump-script>[=I<filename>]
+
+Instead of running the watcher script after it is generated, 
+it is written to I<filename> or to STDOUT.
+
+=back 
+
+If swatchdog is called with no options, it is the same as typing the 
+command line
+
+	swatchdog --config-file=~/.swatchdogrc --tail-file=/var/log/syslog
+
+or if /var/log/messages exists
+
+	swatchdog --config-file=~/.swatchdogrc --tail-file=/var/log/messages
+
+=head1 THE CONFIGURATION FILE 
+
+The configuration file is used by the B<swatchdog(8)>
+program to determine what types of expression patterns to look for
+and what type of action(s) should be taken when a pattern is matched.
+
+Each line should contain a keyword and a, sometimes optional,
+value for that keyword. The keyword and value are separated by 
+a space or an equal (=) sign.
+
+watchfor regex
+
+ignore regex
+
+=over 4
+
+=item B<echo [modes]>
+
+Echo the matched line. The text mode may be I<normal>,
+I<bold>, I<underscore>, I<blink>, I<inverse>, 
+I<black>, I<red>, I<green>, I<yellow>, I<blue>, I<magenta>, I<cyan>, I<white>,
+I<black_h>, I<red_h>, I<green_h>, I<yellow_h>, I<blue_h>, 
+I<magenta_h>, I<cyan_h>, and/or I<white_h>. The I<_h> colors specify 
+a highlighting color. The other colors are assigned to the letters.
+Some modes may not work on some terminals. B<Normal>
+is the default.
+
+=item B<bell [N]>
+
+Echo the matched line, and send a bell I<N> times (default = 1).
+
+=item B<exec command>
+
+Execute I<command>. The I<command> may contain variables which are 
+substituted with fields from the matched line. A I<$N> will be replaced
+by the I<Nth> field in the line. A I<$0> or I<$*> will be replaced by the
+entire line.
+
+=item B<mail [addresses=address:address:...][,subject=your_text_here]>
+
+Send I<mail> to I<address(es)> containing the matched lines as
+they appear (default address is the user who is running the program).
+
+=item B<pipe command[,keep_open]>
+
+Pipe matched lines into I<command>. Use the B<keep_open> option to 
+force the pipe to stay open until a different pipe action is run or 
+until swatchdog exits.
+
+=item B<write [user:user:...]>
+
+Use B<write(1)> to send matched lines to I<user(s)>.
+
+=item B<throttle hours:minutes:seconds,[key=message|regex|<regexE>]>
+
+This action has been depreciated. Use B<threshold> instead
+For example,
+
+=over 4
+
+throttle 15:00,key="foo"
+
+=back
+
+would look like this
+
+=over 4
+
+threshold track_by="foo",type=limit,count=1,seconds=900
+
+=back
+
+=item B<threshold track_by=key, type=<limit|threshold|both>, count=number, seconds=number>
+
+Thresholding can be done for the complete B<watchfor> block and/or for
+individual actions. Add "threshold=on" as an option along with the other
+threshold options when thresholding an individual action.
+
+=over 4
+
+=item B<track_by> 
+
+The value of this should be something that is unique to the B<watchfor>
+regular expression. Tip: enclose unique parts of the regular expression
+in parentheses, then use the sub matches as part of the value 
+(e.g. track_by="$2:$4").
+
+=item B<type>
+
+There are three types of thresholding. They are as follows:
+
+=over 4
+
+=item B<limit>
+
+Perform action(s) for the first "B<count>" matches during the
+time interval specified by "B<seconds>",
+then ignore events for the rest of the time interval (kind of like throttle)
+
+=item B<threshold>
+
+Perform action(s) on each match for up to B<count> matches during the 
+time interval specified by B<seconds>
+
+=item B<both>
+
+Perform actions(s) once per time interval after "B<count>" matches occur,
+then ignore additional matches during the time interval 
+specified by "B<seconds>"
+
+=back
+
+=back
+
+=item B<continue>
+
+Use this action to cause B<swatchdog> to continue to try to match other
+pattern/action groups after it is done with the current pattern/action
+block.
+
+=item B<quit>
+
+Use this action to cause B<swatchdog> to clean up and quit immediately.
+
+=back
+
+=head1 SPECIAL OPTION
+
+The following may be used as an option for any of the above actions except for throttle and threshold.
+
+=over 4
+
+=item B<when=>I<day_of_week:hour_of_day>
+
+Use this option to specify windows of time and days when the action can 
+be performed. 
+For example:
+
+=over 4
+
+mail=sysad-pager@somehost.somedomain,when=1-6:8-17
+
+=back
+
+=back
+
+=head1 FOR PERL HACKS ONLY
+
+=over 4
+
+=item B<perlcode> [I<depth>] arbitrary_Perl_code
+ 
+This permits you to easily insert random Perl code into your swatchdogrc file.
+The optional depth value tells swatchdog how deep into the code to put the perl 
+code. (0=outside the main loop, 1=inside the main loop (default), 2=just inside the 
+conditional used by the current watchfor statement, and 3=inside the throttle
+block).
+
+Its intended use is to permit variable substitution. For example:
+
+=over 4
+
+perlcode $syslog="^\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}.*";
+ 
+watchfor /$syslog hostname pppd/>
+ 
+=back
+
+but any valid Perl is permitted.  Remember the semicolon, and make judicious
+use of the B<--dump-script> option if you run into trouble.
+
+=head1 CONFIGURATION EXAMPLE
+
+=begin text 
+
+perlcode my $fsf_regex = '\d{2}:\d{2}:\d{2}\s+(.* file system full)';
+
+watchfor /$fsf_regex/
+    threshold track_by=$1,type=limit,count=1,seconds=60
+    echo
+    bell
+
+=end text
+
+In this example, a line which contains the string "file system full" will
+be echoed and the screen bell will sound.  Also, B<threshold> will use what 
+is matched within the parentheses as its key rather than trying to use the 
+log message with its time stamp cut out. Multiple instances of
+the message will not be echoed if they appear within a minute of the 
+first one. Instead the following message will be acted upon after 
+the time interval has expired.  
+
+=head1 SEE ALSO
+
+B<signal(3)>, B<perl(1)>, B<perlre(1)>
+
+=head1 NOTES
+
+Upon receiving an ALRM or HUP signal swatchdog will re-read the
+configuration file and restart, except when used with the I<--daemon> 
+command line option where it will simply exit.
+Swatchdog will terminate gracefully
+when it receives a QUIT, TERM, or INT signal.
+
+=head1 AUTHOR
+
+    E. Todd Atkins
+    Todd.Atkins@StanfordAlumni.ORG
+
+=head1 AVAILABILITY
+
+Swatchdog is a SourceForge project whose project page is at 
+http://sourceforge.net/projects/swatchdog and homepage is at
+http://swatchdog.sourceforge.net
+
+=cut

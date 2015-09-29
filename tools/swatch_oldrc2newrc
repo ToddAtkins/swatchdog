@@ -1,0 +1,61 @@
+# #!/bin/sh - ## This doesn't work for under Linux so it is commented out.
+eval 'exec perl $0 ${1+"$@"}'
+ if 0;
+
+
+=head1 NAME
+
+oldrc2newrc - Swatchdog configuration file conversion tool
+
+=head1 SYNOPSYS
+
+B<swatchdog_oldrcrc2newrc> < I<old_config_file> > I<new_config_file>
+
+=head1 DESCRIPTION
+
+This program will convert an swatchdog version 2 configuration file
+into a new style configuration file. I highly reccomend that you
+examine the new file before using it.
+
+=cut
+
+#
+#
+#    oldrc2newrc - a swatchdog configuration file converter
+#    Copyright (C) 1999 E. Todd Atkins
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+#
+#
+
+use strict;
+
+while (<>) {
+  chomp;
+  @_ = split(/\t+/);
+
+  if (/^\s*$/ or /^\s*\#/) {
+    print "$_\n";
+  } elsif (/ignore/) {
+    print "ignore = $_[0]\n";
+  } else {
+    print "watchfor = $_[0]\n";
+    print "\tthrottle = $_[2]\n" if (defined $_[2] and $_[2] =~ /^[0-9]/);
+    foreach my $action (split(/,/, $_[1])) {
+      print "\t$action\n";
+    }
+  }
+}

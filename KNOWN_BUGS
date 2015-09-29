@@ -1,0 +1,21 @@
+KNOWN BUGS
+
+- The File::Tail module does not use the input record separator that perl
+recognizes. It is supposed to be implemented someday. You can get around this
+problem by using the --read-pipe option if you need to use the 
+--input-record-separator option. This is now only a bug if you use the 
+--use-cpan-file-tail option because I reverted back to using the system's
+tail command by default.
+
+- There are 2 configuration file parsing bugs:
+
+	1) Backticking quotes (\") in action option values causes erroneous
+	script production.
+
+	2) Commas in action option values confuses the parser.
+
+  Those of you who are comfortable with perl can work around these
+  two bugs for now by assigning variables with the new perlcode keyword
+  and then using those variables in the action option values.
+
+

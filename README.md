@@ -3,8 +3,7 @@
 Thank you for your interest in swatchdog: the Simple WATCHdog formerly known as swatch.
 
 Swatchdog is a SourceForge project whose project page is at 
-http://sourceforge.net/projects/swatchdog and homepage is at
-http://swatchdog.sourceforge.net
+http://sourceforge.net/projects/swatch
 
 Swatchdog was originally written to actively monitor messages as
 they are written to a log file via the UNIX syslog utility. For

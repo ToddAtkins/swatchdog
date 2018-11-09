@@ -574,14 +574,17 @@ sub action_def_to_subroutine_call {
 		 "write" => { 'sub_name' => "&Swatchdog::Actions::write_message", 'def_arg' => 'USERS' },
 		};
 
+  my $opt;
   my %options;
   my $have_opts = 0;
 
   foreach my $v (split(/,/, $optstr)) {
     if ($v =~ /(\w+)\s*=\s*"?(\S+[^"]*)/) {
-      $options{uc $1} = $2;
+      $opt = uc($1);
+      $options{$opt} = $2;
+      $options{$opt} =~ s/@/\\@/g if ($key eq 'mail');
     } else {
-      my $opt = $v;
+      $opt = $v;
       $opt =~ s/@/\\@/g;
       $opt =~ s/^\s+//o;
       $opt =~ s/^\s+$//o;

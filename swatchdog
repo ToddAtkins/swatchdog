@@ -1347,9 +1347,11 @@ watchfor /$syslog hostname pppd/>
 but any valid Perl is permitted.  Remember the semicolon, and make judicious
 use of the B<--dump-script> option if you run into trouble.
 
+=back
+
 =head1 CONFIGURATION EXAMPLE
 
-=begin text 
+=over 4
 
 perlcode my $fsf_regex = '\d{2}:\d{2}:\d{2}\s+(.* file system full)';
 
@@ -1358,7 +1360,7 @@ watchfor /$fsf_regex/
     echo
     bell
 
-=end text
+=back
 
 In this example, a line which contains the string "file system full" will
 be echoed and the screen bell will sound.  Also, B<threshold> will use what 

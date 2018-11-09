@@ -653,17 +653,19 @@ sub convert_command {
   my $varname = shift;
   my $command = shift;
   my @new_cmd = ();
+  my $i = my $n = my $m;
 
-  $command =~ s/\$[0*]/\$$varname/g if $awk_field_syntax;
+  $command =~ s/(?<!\\)\$[0*]/\$$varname/g;
 
-  foreach my $i (split(/\s+/, $command)) {
-    if ($awk_field_syntax and $i =~ /\$([0-9]+)/) {
-      my $n = substr($i, 1);
-      $n--;
-      push(@new_cmd, "\$$varname\[$n\]");
-    } else {
-      push(@new_cmd, $i);
+  foreach $i (split(/\s+/, $command)) {
+    if ($awk_field_syntax) {
+       while ($i =~ /(?<!\\)\$([1-9]+)/) {
+          $n = $1;
+          $m = $n - 1;
+          $i =~ s/\$$n/\$$varname\[$m\]/;
+       }
     }
+    push(@new_cmd, $i);
   }
 
   return join(' ', @new_cmd);
@@ -737,7 +739,7 @@ sub make_watchfor_block {
   }
   
   if ($do_quit) {
-    $code .= "      exit;\n";
+    $code .= "      &goodbye;\n";
   } elsif (not $do_continue) {
     $code .= "      next;\n";
   }
@@ -1060,7 +1062,7 @@ to perform when each pattern is found.
 
 Use this option only if you want to overide regular expression backreferencing
 in favor of B<awk(1)> style field referencing. Included for backward 
-compatability.
+compatibility.
 
 =item B<--config-file|-c> I<filename>
 
@@ -1210,9 +1212,17 @@ Echo the matched line, and send a bell I<N> times (default = 1).
 =item B<exec command>
 
 Execute I<command>. The I<command> may contain variables which are 
-substituted with fields from the matched line. A I<$N> will be replaced
-by the I<Nth> field in the line. A I<$0> or I<$*> will be replaced by the
-entire line.
+substituted with fields from the matched line. If the B<--awk-field-syntax>
+command-line option has been specified, then each I<$N> will be replaced
+by the I<Nth> field in the line. If the option has not been specified,
+then each I<$N> will refer to a backreference in the regular expression
+used to match the line.
+
+A I<$0> or I<$*> will always be replaced by the entire line, unless they
+have been escaped, regardless of the B<--awk-field-syntax> option.
+
+An escaped I<$N>, I<$0> or I<$*> may have unwanted effects since the value
+will be determined by the shell used to execute the command.
 
 =item B<mail [addresses=address:address:...][,subject=your_text_here]>
 
